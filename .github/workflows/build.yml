@@ -1,0 +1,87 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Maxfiy so'z (faqat pullik rejimda kerak)
+        env:
+          ACTIVATION_SECRET: ${{ secrets.ACTIVATION_SECRET }}
+        run: |
+          if [ -z "$ACTIVATION_SECRET" ]; then
+            echo "::warning::ACTIVATION_SECRET kiritilmagan. Ilova bepul rejimda bu kerak emas."
+          fi
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Papkalarni tayyorlash (bo'sh papka GitHub'ga yuklanmaydi)
+        run: |
+          for s in math physics literature history biology chemistry mothertongue informatics; do
+            for k in textbooks materials; do
+              mkdir -p "assets/books/$s/$k"
+              touch "assets/books/$s/$k/.gitkeep"
+            done
+          done
+          mkdir -p assets/subjects
+          touch assets/subjects/.gitkeep
+
+      - name: Android loyihasini yaratish
+        run: |
+          { flutter create --platforms=android --org uz.abituriyent --project-name abituriyent_test . \
+            && rm -f test/widget_test.dart \
+            && python3 tools/patch_android.py ; } 2>&1 | tee step.log \
+            || { bash tools/annotate.sh "1-qadam xatosi: flutter create" step.log 40; exit 1; }
+
+      - name: Paketlarni yuklash
+        run: |
+          flutter pub get 2>&1 | tee step.log \
+            || { bash tools/annotate.sh "2-qadam xatosi: flutter pub get" step.log 40; exit 1; }
+
+      - name: Kodni tekshirish
+        run: |
+          flutter analyze --no-fatal-infos --no-fatal-warnings > analyze.log 2>&1 || true
+          cat analyze.log
+          grep -E "^\s*error •" analyze.log | head -30 | while IFS= read -r line; do
+            echo "::error title=Kod xatosi::$line"
+          done || true
+
+      - name: APK yig'ish
+        env:
+          ACTIVATION_SECRET: ${{ secrets.ACTIVATION_SECRET }}
+        run: |
+          flutter build apk --release --dart-define=ACTIVATION_SECRET="$ACTIVATION_SECRET" 2>&1 | tee build.log \
+            || { bash tools/annotate.sh "3-qadam xatosi: APK yig'ish" build.log 45; exit 1; }
+
+      - name: APK ni saqlash (Actions -> Artifacts)
+        uses: actions/upload-artifact@v4
+        with:
+          name: abituriyent-test-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Releases bo'limiga qo'yish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: APK build ${{ github.run_number }}
+          files: build/app/outputs/flutter-apk/app-release.apk
